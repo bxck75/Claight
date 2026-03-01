@@ -1,4 +1,11 @@
+# config.py
+from dotenv import load_dotenv
+import os
 
+load_dotenv()
+
+TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # ── Model ─────────────────────────────────────────────────────────────────────
 
@@ -30,4 +37,4 @@ CRON_INTERVAL_MINUTES = 1
 AGENT_SCRIPT_PATH = "/media/codemonkeyxl/TBofCode/cron_llama/agent.py"   # <-- change this
 
 # Where state is stored between cron wakes
-STATE_FILE = "data/state.json"        # <-- change this (or leave relative)
+STATE_FILE = "/media/codemonkeyxl/TBofCode/cron_llama/data/state.json"        # <-- change this (or leave relative)
