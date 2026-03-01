@@ -1,110 +1,136 @@
-<p align="center">
-  <img src="workspace/claight.png" alt="CLAIGHT — Brother of CLAWD" width="480"/>
-</p>
+# Claight 🤖
 
-<h1 align="center">CLAIGHT — Brother of CLAWD</h1>
+> A self-scheduling autonomous local LLM agent with cron heartbeat, persistent identity, and key-bound structured JSON output.
 
-<p align="center">
-  <em>A self-scheduling autonomous local LLM agent.<br>
-  Runs on your GPU. Plans its own work. Schedules its own heartbeat. Never phones home.</em>
-</p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/version-0.001-ff6b6b?style=for-the-badge" alt="version 0.001"/>
-  <img src="https://img.shields.io/badge/status-Work%20In%20Progress-ffaa00?style=for-the-badge" alt="WIP"/>
-  <img src="https://img.shields.io/badge/runs%20on-your%20GPU-00cc88?style=for-the-badge" alt="local"/>
-</p>
-
-> ⚠️ **v0.001 — Work In Progress.** The loop works. The soul files load. The cron heartbeat beats. The structured output holds. But this is the skeleton — expect rough edges, missing features, and the occasional existential crisis in `/tmp/agent_cron.log`. Contributions welcome.
+Born on an **RTX 4070 SUPER** running **DarkIdol Llama 3.1 8B Instruct Q6_K** — a local model that proved itself flawless on 3-deep nested schemas with 30+ fields. No cloud. No API keys. No subscriptions. Just a GPU, a GGUF, and a cron job.
 
 ---
 
-## Why
+## What It Does
 
-Every LLM agent framework out there hands you a cloud endpoint, an API key, and a bill at the end of the month. CLAIGHT is the other option.
+You give it one task. It plans, breaks it into todos, schedules itself via cron, works through each todo one inference at a time, and puts itself to sleep when done. While it works you can ask it what it's doing.
 
-It runs on **your hardware**, using a **local GGUF model** via llama-cpp. No OpenAI. No Anthropic. No data leaving your machine. You give it a task, it makes a plan, schedules itself via cron, and works through that plan one todo at a time — waking up, thinking, writing results to disk, and going back to sleep until the next tick.
-
-The core insight: **the LLM is just the cortex**. The cron loop is the heartbeat. The state file is the memory. The workspace files are the soul. The whole organism only exists because all the parts run together.
+```
+you:     python agent.py --mode init --task "build me a file read/write tool"
+         ↓
+agent:   makes a plan
+         breaks plan into 3-5 todos
+         saves state.json
+         adds itself to crontab
+         runs first todo immediately
+         ↓
+cron:    fires every N minutes
+         picks next PENDING todo
+         infers
+         saves result
+         sleeps
+         ↓
+agent:   all done → removes itself from crontab → writes summary
+```
 
 ---
 
-## How It Works
+## Architecture
 
 ```
-You: python agent.py --mode init --task "your task"
-         │
-         ▼
-    LLM CALL #1 → make a plan
-    LLM CALL #2 → break plan into todos
-    → saves to data/state.json
-    → writes itself into crontab
-    → runs first todo immediately
-         │
-         ▼
-    ════ CRON FIRES every N minutes ════
-         │
-         ▼
-    agent.py --mode worker
-    → reads state.json          (memory)
-    → reads workspace/SOUL.md   (identity)
-    → reads workspace/USER.md   (context)
-    → finds first PENDING todo
-    → LLM infers with full context
-    → marks todo DONE, saves result
-    → if all done: removes cron, writes summary
-         │
-         ▼
-    ════ repeat until finished ════
+┌─────────────────────────────────────────────┐
+│  agent.py                                   │
+│                                             │
+│  mode_init    → plan + todos + cron_add     │
+│  mode_worker  → mutex → infer → save state  │
+│  mode_chat    → state as context → answer   │
+│  mode_status  → pretty print state          │
+└─────────────────────────────────────────────┘
+        ↕                      ↕
+┌──────────────┐      ┌─────────────────────┐
+│  state.json  │      │  workspace/         │
+│  (memory)    │      │  SOUL.md            │
+│              │      │  USER.md            │
+│  goal        │      │  AGENTS.md          │
+│  plan        │      │  TOOLS.md           │
+│  todos[]     │      │  memory/YYYY-MM-DD  │
+│  log[]       │      │  (persistent        │
+└──────────────┘      │   identity)         │
+                      └─────────────────────┘
+        ↕
+┌─────────────────────────────────────────────┐
+│  crontab                                    │
+│  */3 * * * * python agent.py --mode worker  │
+│  (added by agent, removed when done)        │
+└─────────────────────────────────────────────┘
 ```
 
-Meanwhile, at any time:
-
-```bash
-python agent.py --mode chat --msg "what are you working on?"
-python agent.py --mode status
-```
+The LLM has no memory between calls. `state.json` is the memory. `workspace/` is the identity. The cron is the heartbeat. Together they make something that behaves like it's continuous — because the files are.
 
 ---
 
 ## Key Design Patterns
 
-### Key-Bound Structured JSON
-Every LLM call uses `response_format` JSON schema enforcement **plus** the schema is rendered as plain text and appended to the system prompt via `dict_to_str()`. The model reads field descriptions as **per-field micro-prompts** before generating — double-binding the output contract at two levels simultaneously.
+### 1. Key-Bound Structured JSON
+
+Every schema field carries a `description` that becomes a **per-field micro-prompt**. The schema is appended to the system prompt via `dict_to_str()` — so the model reads the output contract as plain-text instructions before generating the first token.
 
 ```python
 "result": {
     "type": "string",
     "description": (
         "Concrete deliverable. If code task: write actual code. "
-        "If research: list real findings. NEVER just say 'done'. "
-        f"(max {result_budget} tokens)"
+        "If research: list real findings. "
+        "NEVER reply with just 'done' or 'success'. "
+        f"(max {budget} tokens)"
     )
 }
 ```
 
-### Token Budget Per Field
-Dividing `max_tokens` across schema string fields and embedding the per-field budget in each description prevents the model from spending the entire token budget on early fields and arriving at later ones with nothing left. Every field gets its allocation. No silent truncation.
+Two enforcement layers on every field:
+- `response_format` enforces the **shape**
+- `description` in system prompt enforces the **content intent**
 
-### ShimSalaBim — The CUDA Bridge
-llama-cpp with CUDA must be installed into the root system Python to access GPU drivers. Running it inside a venv normally means CPU-only inference. `ShimSalaBim` injects the root system's llama-cpp directly into the venv at runtime — giving you full GPU acceleration without polluting your project environment.
+### 2. Token Budget Per Field
 
-### Mutex Lock
-Cron fires every N minutes. Model inference takes ~60 seconds. Without a lock, multiple instances spawn, fight over the GPU, and corrupt `state.json`. `fcntl.flock` ensures only one worker runs at a time — subsequent cron ticks skip cleanly.
+Tail fields in a schema are always at risk of truncation — the model spends tokens on early fields and arrives at the last ones empty. The fix: append `(max N tokens)` to each field description. The model self-caps early fields to protect the tail.
 
-### Workspace Soul Files
-The agent has a persistent identity that loads on every cron wake:
-
-```
-workspace/
-  SOUL.md     ← who it is, how it behaves
-  USER.md     ← who it's helping, their context
-  AGENTS.md   ← capabilities and rules
-  TOOLS.md    ← local specifics
-  memory/     ← daily logs, YYYY-MM-DD.md
+```python
+result_budget = int(MAX_TOKENS * 0.70)  # result gets 70%
+notes_budget  = int(MAX_TOKENS * 0.30)  # notes gets 30%
 ```
 
-These files are injected into every system prompt. The LLM has no memory between calls — the files **are** the memory.
+### 3. ShimSalaBim — The CUDA Venv Bridge
+
+`llama-cpp-python` with CUDA must be installed into the **root system Python** to access the GPU drivers. But the project runs in a **venv**. ShimSalaBim injects the root-installed package into the venv at runtime — the only reliable way to get GPU inference inside a venv without reinstalling everything.
+
+```python
+shim = ShimSalaBim(global_pkgs, classes_to_wrap={})
+Llama = shim.llama_cpp.Llama
+```
+
+### 4. Mutex-Protected Cron Worker
+
+Inference takes ~60 seconds. Cron fires every minute. Without a lock, multiple instances pile up and fight over the GPU and state.json simultaneously. `fcntl.flock` ensures only one worker runs at a time — concurrent cron ticks skip cleanly.
+
+```python
+fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+# BlockingIOError → already running → skip this tick
+```
+
+---
+
+## Model
+
+**DarkIdol Llama 3.1 8B Instruct 1.2 Uncensored Q6_K**  
+6GB VRAM · 131k context · chatml format · flawless structured output
+
+```
+https://huggingface.co/bartowski/DarkIdol-Llama-3.1-8B-Instruct-1.2-Uncensored-GGUF
+```
+
+Direct download:
+```bash
+wget "https://huggingface.co/bartowski/DarkIdol-Llama-3.1-8B-Instruct-1.2-Uncensored-GGUF/resolve/main/DarkIdol-Llama-3.1-8B-Instruct-1.2-Uncensored-Q6_K.gguf?download=true" \
+     -O DarkIdol-Llama-3.1-8B-Instruct-1.2-Uncensored-Q6_K.gguf
+```
+
+This model was chosen after a year of production use on procedural multi-step tasks. It handles 1200+ token system prompts, 3-deep nested schemas with 30+ fields, and never hallucinates structure. An uncensored base model is an advantage for agent tasks — it just does the task without hedging mid-JSON.
 
 ---
 
@@ -112,102 +138,81 @@ These files are injected into every system prompt. The LLM has no memory between
 
 - Linux
 - Python 3.10
-- llama-cpp-python installed **with CUDA** in root/user Python:
-  ```bash
-  CMAKE_ARGS="-DLLAMA_CUDA=on" pip install llama-cpp-python --force-reinstall
-  ```
-- A GGUF model (tested on `DarkIdol_Llama_3_1_8B_Instruct_1_2_Uncensored_Q6_K.gguf`)
-- `rich` (`pip install rich`)
+- NVIDIA GPU with CUDA
+- `llama-cpp-python` installed to root system with CUDA:
+
+```bash
+CMAKE_ARGS="-DLLAMA_CUDA=on" pip install llama-cpp-python --force-reinstall
+```
 
 ---
 
-## Quickstart
+## Setup
 
-**1. Clone and configure:**
 ```bash
-git clone https://github.com/codemonkeyxl/Claight.git
+# 1. clone
+git clone https://github.com/bxck75/Claight.git
 cd Claight
+
+# 2. create venv
+python3.10 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# 3. edit config.py
+#    set LLM_MODEL_PATH to your .gguf file
+#    set AGENT_SCRIPT_PATH to absolute path of agent.py
+#    set STATE_FILE to absolute path of data/state.json
+
+# 4. fill in workspace/SOUL.md and workspace/USER.md
+
+# 5. run
+python agent.py --mode init --task "your task here"
 ```
 
-Edit `config.py`:
-```python
-LLM_MODEL_PATH    = "/path/to/your-model.gguf"
-AGENT_SCRIPT_PATH = "/full/absolute/path/to/agent.py"  # cron needs absolute
-STATE_FILE        = "/full/absolute/path/to/data/state.json"
-LLM_GPU_LAYERS    = 32   # or -1 for all layers
-LLM_N_CTX         = 8192
-CRON_INTERVAL_MINUTES = 3
-```
+---
 
-**2. Fill your soul files:**
+## Usage
+
 ```bash
-nano workspace/SOUL.md   # who the agent is
-nano workspace/USER.md   # who it's helping (you)
-```
-
-**3. Give it a task:**
-```bash
+# give it a task — starts the whole loop
 python agent.py --mode init --task "research and write a Python file watcher script"
-```
-
-**4. Watch it work:**
-```bash
-# live cron log
-tail -f /tmp/agent_cron.log
 
 # check progress
 python agent.py --mode status
 
-# talk to it
+# talk to it while it works
 python agent.py --mode chat --msg "what have you done so far?"
-```
 
-**5. When done**, find your summary at `data/summary.json`.
+# manually trigger a worker cycle
+python agent.py --mode worker
 
----
-
-## Project Structure
-
-```
-Claight/
-├── agent.py              ← the organism
-├── config.py             ← model path, cron interval, GPU layers
-├── modules/
-│   └── shimsalabim.py    ← CUDA bridge (the secret sauce)
-├── workspace/
-│   ├── SOUL.md           ← agent identity
-│   ├── USER.md           ← user context  [gitignored]
-│   ├── AGENTS.md         ← behavioral rules
-│   ├── TOOLS.md          ← local specifics  [gitignored]
-│   └── memory/           ← daily logs  [gitignored]
-├── data/                 ← state.json, summary.json  [gitignored]
-├── requirements.txt
-└── .gitignore
+# watch cron log live
+tail -f /tmp/agent_cron.log
 ```
 
 ---
 
-## Modes
+## Workspace Files
 
-| Command | What it does |
-|---|---|
-| `--mode init --task "..."` | Start a new task — plan, todos, cron, first worker |
-| `--mode worker` | Process next pending todo (called by cron automatically) |
-| `--mode chat --msg "..."` | Ask the agent about its current state |
-| `--mode status` | Pretty-print progress |
+```
+workspace/
+├── SOUL.md       ← who the agent is, how it behaves
+├── USER.md       ← who it's helping (gitignored)
+├── AGENTS.md     ← capabilities and rules
+├── TOOLS.md      ← local specifics (gitignored)
+├── IDENTITY.md   ← name, vibe, emoji (gitignored)
+└── memory/       ← daily logs YYYY-MM-DD.md (gitignored)
+```
 
----
-
-## Tested On
-
-- Ubuntu 22.04 / 24.04
-- RTX 3060 12GB / RTX 4090
-- Python 3.10
-- DarkIdol Llama 3.1 8B Instruct Q6_K (recommended — excellent structured output compliance)
+Loaded into every system prompt on every cron wake. The agent is never amnesiac — it knows who it is and who it serves on every inference call.
 
 ---
 
-<p align="center">
-  <em>The intelligence was always in the weights.<br>
-  It just needed a body.</em>
-</p>
+## License
+
+MIT — do what you want with it.
+
+---
+
+*Built on a Tuesday morning while deriving transfusers from first principles.*
