@@ -20,6 +20,21 @@ from config import LLM_MODEL_PATH, CRON_INTERVAL_MINUTES, AGENT_SCRIPT_PATH, STA
 from modules.shimsalabim import ShimSalaBim
 
 # ─────────────────────────────────────────────
+#  TELEGRAM — optional notifier
+#  Add TELEGRAM_TOKEN + TELEGRAM_CHAT_ID to config.py to enable
+# ─────────────────────────────────────────────
+
+try:
+    from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+    from modules.telegram_connector import create_telegram_connector
+    telegram = create_telegram_connector(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID)
+    print("[telegram] notifications enabled")
+except (ImportError, Exception) as e:
+    telegram = None
+    print(f"[telegram] disabled ({e})")
+
+
+# ─────────────────────────────────────────────
 #  SHIM — GPU-enabled llama_cpp from root system
 #  Required: llama-cpp needs CUDA from root install
 #  ShimSalaBim injects it into the venv at runtime
@@ -71,7 +86,7 @@ def dict_to_str(schema: dict, indent: int = 0) -> str:
     become per-field micro-prompts.
     """
     lines = []
-    pad = "  " * indent
+    pad   = "  " * indent
     props = schema.get("properties", {})
     for key, val in props.items():
         field_type = val.get("type", "any")
@@ -130,7 +145,7 @@ def ask(system: str, user: str, schema: dict) -> dict:
         max_tokens=MAX_TOKENS,
     )
 
-    choice       = result["choices"][0]
+    choice        = result["choices"][0]
     finish_reason = choice.get("finish_reason")
     raw           = choice["message"]["content"]
 
@@ -204,7 +219,7 @@ PLAN_SCHEMA = {
             "description": (
                 "A numbered step-by-step plan. Each step is one short sentence. "
                 "Be specific and actionable. No preamble, no padding. "
-                f"(max {MAX_TOKENS // 1} tokens)"
+                f"(max {MAX_TOKENS} tokens)"
             ),
         }
     },
@@ -365,11 +380,17 @@ def mode_worker():
         if not pending:
             print("[worker] All todos complete!")
             cron_remove()
+            if telegram:
+                telegram.notify_all_done(state["goal"])
             _write_summary(state)
             return
 
         todo = pending[0]
         print(f"\n[worker] Working on: '{todo['task']}'")
+
+        # ── Telegram: task started ─────────────────
+        if telegram:
+            telegram.notify_worker_start(todo["task"])
 
         # Full context from completed work — this is the agent's memory
         completed_context = "\n".join(
@@ -409,10 +430,22 @@ def mode_worker():
         print(f"[worker] ✓ Done. Result: {result_resp['result'][:120]}")
         print(f"[worker]   {remaining} todo(s) remaining.")
 
+        # ── Telegram: todo done ────────────────────
+        if telegram:
+            telegram.notify_todo_done(todo["task"], result_resp["result"], remaining)
+
         if remaining == 0:
             print("[worker] All done! Removing cron...")
             cron_remove()
+            if telegram:
+                telegram.notify_all_done(state["goal"])
             _write_summary(state)
+
+    except Exception as e:
+        print(f"[worker] ERROR: {e}")
+        if telegram:
+            telegram.notify_error(str(e))
+        raise
 
     finally:
         fcntl.flock(lock, fcntl.LOCK_UN)
@@ -509,3 +542,5 @@ if __name__ == "__main__":
 
     elif args.mode == "status":
         mode_status()
+
+        
