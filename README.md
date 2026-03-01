@@ -97,6 +97,26 @@ notes_budget  = int(MAX_TOKENS * 0.30)  # notes gets 30%
 
 ### 3. ShimSalaBim — The CUDA Venv Bridge
 
+
+## Dependencies
+
+- **ShimSalaBim** — CUDA bridge / MITM monitor for venv↔root package injection  
+  → [github.com/ShokussPokuss/ShimSalaBim](https://github.com/ShokussPokuss/ShimSalaBim)
+  
+- **llama-cpp-python** (with CUDA — see ShimSalaBim docs)
+- **python-dotenv**
+- **rich**
+- **requests**
+```
+
+And in `requirements.txt` a comment pointing to it:
+```
+# ShimSalaBim — required for GPU inference
+# https://github.com/ShokussPokuss/ShimSalaBim
+# install per its README before running Claight
+
+
+
 `llama-cpp-python` with CUDA must be installed into the **root system Python** to access the GPU drivers. But the project runs in a **venv**. ShimSalaBim injects the root-installed package into the venv at runtime — the only reliable way to get GPU inference inside a venv without reinstalling everything.
 
 ```python
