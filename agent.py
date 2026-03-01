@@ -5,7 +5,7 @@ USAGE:
   python agent.py --mode init  --task "Build a simple todo CLI app"
   python agent.py --mode worker        # called by cron automatically
   python agent.py --mode chat --msg "what are you working on?"
-  python agent.py --mode status        # print the state file pretty
+  python agent.py --mode status        # rp the state file pretty
 """
 
 import json
@@ -15,7 +15,7 @@ import sys
 import fcntl
 from pathlib import Path
 from datetime import datetime
-
+from rich import print as rp
 from config import LLM_MODEL_PATH, CRON_INTERVAL_MINUTES, AGENT_SCRIPT_PATH, STATE_FILE
 from modules.shimsalabim import ShimSalaBim
 
@@ -28,10 +28,10 @@ try:
     from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
     from modules.telegram_connector import create_telegram_connector
     telegram = create_telegram_connector(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID)
-    print("[telegram] notifications enabled")
+    rp("[telegram] notifications enabled")
 except (ImportError, Exception) as e:
     telegram = None
-    print(f"[telegram] disabled ({e})")
+    rp(f"[telegram] disabled ({e})")
 
 
 # ─────────────────────────────────────────────
@@ -124,6 +124,26 @@ def make_budget(max_tokens: int, schema: dict, weight: float = 1.0) -> int:
 # ─────────────────────────────────────────────
 
 MAX_TOKENS = 1024
+import re
+
+def sanitize_json(raw: str) -> str:
+    """Escape unescaped newlines/tabs inside JSON string values."""
+    # Find the JSON object boundaries
+    start = raw.find('{')
+    end = raw.rfind('}') + 1
+    if start == -1 or end == 0:
+        raise ValueError("No JSON object found in response")
+    raw = raw[start:end]
+    
+    # Replace literal newlines/tabs inside string values with escape sequences
+    def fix_string(m):
+        return m.group(0).replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+    
+    # Match JSON string values and fix control chars inside them
+    raw = re.sub(r'"((?:[^"\\]|\\.)*)"', fix_string, raw)
+    return raw
+
+
 
 def ask(system: str, user: str, schema: dict) -> dict:
     """
@@ -154,8 +174,9 @@ def ask(system: str, user: str, schema: dict) -> dict:
             f"[ask] truncated — hit max_tokens ({MAX_TOKENS}). "
             "Raise MAX_TOKENS or tighten field descriptions."
         )
-
-    return json.loads(raw)
+    rp(f"RAW result: {raw}")
+    # Then in ask():
+    return json.loads(sanitize_json(raw))
 
 
 # ─────────────────────────────────────────────
@@ -194,7 +215,7 @@ def cron_add():
         return
     new_crontab = current.rstrip() + "\n" + cron_line + "\n"
     subprocess.run(["crontab", "-"], input=new_crontab.encode(), check=True)
-    print(f"[cron] scheduled every {CRON_INTERVAL_MINUTES} min → log: /tmp/agent_cron.log")
+    rp(f"[cron] scheduled every {CRON_INTERVAL_MINUTES} min → log: /tmp/agent_cron.log")
 
 
 def cron_remove():
@@ -202,7 +223,7 @@ def cron_remove():
     lines = [l for l in current.splitlines() if CRON_TAG not in l]
     new_crontab = "\n".join(lines) + "\n"
     subprocess.run(["crontab", "-"], input=new_crontab.encode(), check=True)
-    print("[cron] removed — agent finished all work")
+    rp("[cron] removed — agent finished all work")
 
 
 # ─────────────────────────────────────────────
@@ -307,7 +328,7 @@ def mode_init(task: str):
     4. Add cron heartbeat
     5. Run first todo immediately
     """
-    print(f"\n[init] Goal: {task}")
+    rp(f"\n[init] Goal: {task}")
 
     # ── Step 1: Plan ──────────────────────────────
     plan_resp = ask(
@@ -316,7 +337,7 @@ def mode_init(task: str):
         schema=PLAN_SCHEMA,
     )
     plan_text = plan_resp["plan_summary"]
-    print(f"[init] Plan:\n{plan_text}\n")
+    rp(f"[init] Plan:\n{plan_text}\n")
 
     # ── Step 2: Todos ─────────────────────────────
     todos_resp = ask(
@@ -331,9 +352,9 @@ def mode_init(task: str):
         {"id": i, "task": t, "status": "PENDING", "result": None}
         for i, t in enumerate(todos_resp["todos"])
     ]
-    print(f"[init] Todos:")
+    rp(f"[init] Todos:")
     for t in todos:
-        print(f"  ○  {t['task']}")
+        rp(f"  ○  {t['task']}")
 
     # ── Step 3: Save state ────────────────────────
     state = {
@@ -349,7 +370,7 @@ def mode_init(task: str):
     cron_add()
 
     # ── Step 5: Do first todo now ─────────────────
-    print("\n[init] Running first todo immediately...\n")
+    rp("\n[init] Running first todo immediately...\n")
     mode_worker()
 
 
@@ -364,7 +385,7 @@ def mode_worker():
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        print("[worker] already running — skipping this cron tick")
+        rp("[worker] already running — skipping this cron tick")
         lock.close()
         return
 
@@ -372,13 +393,13 @@ def mode_worker():
         state = load_state()
 
         if not state:
-            print("[worker] No state file found. Run --mode init first.")
+            rp("[worker] No state file found. Run --mode init first.")
             return
 
         pending = [t for t in state["todos"] if t["status"] == "PENDING"]
 
         if not pending:
-            print("[worker] All todos complete!")
+            rp("[worker] All todos complete!")
             cron_remove()
             if telegram:
                 telegram.notify_all_done(state["goal"])
@@ -386,7 +407,7 @@ def mode_worker():
             return
 
         todo = pending[0]
-        print(f"\n[worker] Working on: '{todo['task']}'")
+        rp(f"\n[worker] Working on: '{todo['task']}'")
 
         # ── Telegram: task started ─────────────────
         if telegram:
@@ -427,22 +448,22 @@ def mode_worker():
         save_state(state)
 
         remaining = len([t for t in state["todos"] if t["status"] == "PENDING"])
-        print(f"[worker] ✓ Done. Result: {result_resp['result'][:120]}")
-        print(f"[worker]   {remaining} todo(s) remaining.")
+        rp(f"[worker] ✓ Done. Result: {result_resp['result'][:120]}")
+        rp(f"[worker]   {remaining} todo(s) remaining.")
 
         # ── Telegram: todo done ────────────────────
         if telegram:
             telegram.notify_todo_done(todo["task"], result_resp["result"], remaining)
 
         if remaining == 0:
-            print("[worker] All done! Removing cron...")
+            rp("[worker] All done! Removing cron...")
             cron_remove()
             if telegram:
                 telegram.notify_all_done(state["goal"])
             _write_summary(state)
 
     except Exception as e:
-        print(f"[worker] ERROR: {e}")
+        rp(f"[worker] ERROR: {e}")
         if telegram:
             telegram.notify_error(str(e))
         raise
@@ -459,7 +480,7 @@ def mode_chat(message: str):
     """
     state = load_state()
     if not state:
-        print("No active task. Start one with --mode init --task '...'")
+        rp("No active task. Start one with --mode init --task '...'")
         return
 
     todos_summary = "\n".join(
@@ -481,28 +502,28 @@ def mode_chat(message: str):
         ),
         schema=CHAT_SCHEMA,
     )
-    print(f"\nAgent: {resp['answer']}\n")
+    rp(f"\nAgent: {resp['answer']}\n")
 
 
 def mode_status():
-    """Pretty-print current state."""
+    """Pretty-rp current state."""
     state = load_state()
     if not state:
-        print("No state file found.")
+        rp("No state file found.")
         return
 
     done = [t for t in state["todos"] if t["status"] == "DONE"]
-    print(f"\n{'─'*55}")
-    print(f"  Goal    : {state.get('goal')}")
-    print(f"  Started : {state.get('started_at')}")
-    print(f"  Progress: {len(done)}/{len(state['todos'])} todos done")
-    print(f"{'─'*55}")
+    rp(f"\n{'─'*55}")
+    rp(f"  Goal    : {state.get('goal')}")
+    rp(f"  Started : {state.get('started_at')}")
+    rp(f"  Progress: {len(done)}/{len(state['todos'])} todos done")
+    rp(f"{'─'*55}")
     for t in state.get("todos", []):
         mark = "✓" if t["status"] == "DONE" else "○"
-        print(f"  {mark}  {t['task']}")
+        rp(f"  {mark}  {t['task']}")
         if t.get("result"):
-            print(f"       → {t['result'][:100]}...")
-    print(f"{'─'*55}\n")
+            rp(f"       → {t['result'][:100]}...")
+    rp(f"{'─'*55}\n")
 
 
 def _write_summary(state: dict):
@@ -515,7 +536,7 @@ def _write_summary(state: dict):
     out = Path("data/summary.json")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(summary, indent=2))
-    print(f"[agent] Summary written to {out}")
+    rp(f"[agent] Summary written to {out}")
 
 
 # ─────────────────────────────────────────────
@@ -543,4 +564,3 @@ if __name__ == "__main__":
     elif args.mode == "status":
         mode_status()
 
-        
