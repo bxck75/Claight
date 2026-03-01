@@ -1,0 +1,6 @@
+# llama-cpp-python must be installed manually with CUDA flags:
+# CMAKE_ARGS="-DLLAMA_CUDA=on" pip install llama-cpp-python --force-reinstall
+#
+# pip install -r requirements.txt
+rich
+pathlib

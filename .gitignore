@@ -1,0 +1,28 @@
+# personal — never commit
+workspace/USER.md
+workspace/TOOLS.md
+workspace/IDENTITY.md
+workspace/memory/
+
+# runtime state
+data/
+/tmp/agent_*.log
+/tmp/agent_worker.lock
+
+# models — never commit
+*.gguf
+*.bin
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+env/
+.venv/
+
+# editor
+.vscode/
+.idea/
+*.swp
